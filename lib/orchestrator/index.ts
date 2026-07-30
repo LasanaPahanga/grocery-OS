@@ -38,6 +38,7 @@ import {
   alignBudgetWithCuration,
 } from '@/lib/orchestrator/budget-decision';
 import { curateMealPlan, inferMealPeriod } from '@/lib/orchestrator/meal-curation';
+import { enforcePlanConsistency } from '@/lib/orchestrator/plan-consistency';
 import { isDineOutIntent, resolvePresentationPlan } from '@/lib/orchestrator/output-mode';
 import { cheapestStore } from '@/lib/services/scraper';
 import { lineTotalForIngredient, isPiecePricedUnit, safeLkr, safeQuantity, storeUnitPrice } from '@/lib/services/price-units';
@@ -565,30 +566,64 @@ export async function runOrchestration(
           cookEffort: ctx.cookEffort,
           mealMode: ctx.mealMode,
         });
-  recipes = presentation.showRecipes ? curatedRecipes : [];
-  const planCuration =
-    presentation.mode === 'dine_out'
-      ? {
-          primaryAction: 'order_out' as const,
-          mealPeriod: inferMealPeriod(),
-          weatherContext: `${weather.condition} ${weather.temperature}°C${weather.rainMm ? `, ${weather.rainMm}mm rain` : ''}`,
-          showCount: 0,
-          hiddenCount: presentation.contextRecipes.length,
-          recipeRankings: presentation.contextRecipes.map((r) => ({
-            name: r.name,
-            shopCostLkr: 0,
-            homeCount: r.ingredients.filter((i) => i.source === 'inventory').length,
-            score: 0,
-            included: false,
-            reason: 'You asked to order out instead',
-          })),
-          headline: presentation.contextDish
-            ? `Order ${presentation.contextDish} nearby — skip the grocery run`
-            : 'Order out — nearby restaurants',
-        }
-      : planCurationRaw;
 
-  const bestRank = planCuration?.recipeRankings[0];
+  recipes = presentation.showRecipes ? curatedRecipes : [];
+
+  // Guard: output must match query + real pantry (retag, drop chicken-without-chicken, shop for gaps)
+  let planCuration = planCurationRaw;
+  if (presentation.mode === 'dine_out') {
+    planCuration = {
+      primaryAction: 'order_out' as const,
+      mealPeriod: inferMealPeriod(),
+      weatherContext: `${weather.condition} ${weather.temperature}°C${weather.rainMm ? `, ${weather.rainMm}mm rain` : ''}`,
+      showCount: 0,
+      hiddenCount: presentation.contextRecipes.length,
+      recipeRankings: presentation.contextRecipes.map((r) => ({
+        name: r.name,
+        shopCostLkr: 0,
+        homeCount: r.ingredients.filter((i) => i.source === 'inventory').length,
+        score: 0,
+        included: false,
+        reason: 'You asked to order out instead',
+      })),
+      headline: presentation.contextDish
+        ? `Order ${presentation.contextDish} nearby — skip the grocery run`
+        : 'Order out — nearby restaurants',
+    };
+  }
+
+  if (presentation.showRecipes && recipes.length) {
+    const consistency = await enforcePlanConsistency({
+      prompt: req.prompt,
+      mealMode: ctx.mealMode,
+      inventory,
+      recipes,
+      ctx,
+    });
+    recipes = consistency.recipes;
+    if (consistency.repaired) {
+      planLog(scope, `Plan consistency repair — ${consistency.issues.join('; ')}`, {
+        recipes: recipes.map((r) => r.name),
+      });
+      // Re-curate so headline / rankings match repaired recipes
+      if (presentation.mode !== 'dine_out' && recipes.length) {
+        const again = curateMealPlan({
+          recipes,
+          prices,
+          budgetLkr,
+          weather,
+          prompt: req.prompt,
+          isMealRoutine: isRoutine,
+          cookEffort: ctx.cookEffort,
+          mealMode: ctx.mealMode,
+        });
+        recipes = again.recipes;
+        planCuration = again.meta ?? planCuration;
+      }
+    }
+  }
+
+  const bestRank = planCuration?.recipeRankings?.[0];
   const shoppingList = presentation.showShoppingList
     ? buildShoppingList(
         recipes,

@@ -249,13 +249,55 @@ function buildStringHoppersFromPantry(ctx: AgentContext, servings = 4): Recipe {
   };
 }
 
+function buildFishCurryFromPantry(ctx: AgentContext, servings = 4): Recipe {
+  const shelf = ctx.relevantPantry?.length ? ctx.relevantPantry : ctx.inventory;
+  const has = (term: string) => shelf.some((i) => i.item.toLowerCase().includes(term)) ||
+    ctx.inventory.some((i) => i.item.toLowerCase().includes(term));
+  const ing = (name: string, amount: number, unit: string, pantryKey: string) => ({
+    name,
+    amount,
+    unit,
+    source: (has(pantryKey) ? 'inventory' : 'shopping') as 'inventory' | 'shopping',
+  });
+
+  return {
+    id: 'local_fish_curry',
+    name: 'Sri Lankan Fish Curry',
+    ingredients: [
+      ing('Fish', 200, 'g', 'fish'),
+      ing('Onion', 2, 'pcs', 'onion'),
+      ing('Tomato', 2, 'pcs', 'tomato'),
+      ing('Coconut Oil', 2, 'tbsp', 'oil'),
+      ing('Garlic', 3, 'cloves', 'garlic'),
+      ing('Curry powder', 2, 'tsp', 'curry'),
+      ing('Turmeric', 0.5, 'tsp', 'turmeric'),
+      ing('Coconut milk', 150, 'ml', 'coconut'),
+      ing('Green Chillies', 2, 'pcs', 'chilli'),
+    ],
+    instructions: [
+      'Temper onion and garlic in coconut oil; add curry powder and turmeric.',
+      'Add tomato and a splash of water; simmer into a gravy.',
+      'Slide in fish pieces; cook gently 8–10 minutes. Finish with coconut milk if you have it.',
+      `Serve with rice for ${servings} — uses your fish before it spoils.`,
+    ],
+    prepTimeMin: 10,
+    cookTimeMin: 20,
+    assignedCook: assignCook(ctx),
+    reasonForSelection: 'Built from your pantry — fish is spoiling soon.',
+    dietaryTags: ['Sri Lankan', 'Fish'],
+    nutritionalInfo: { calories: 420, protein: '28g', sugar: '4g', fat: '18g' },
+  };
+}
+
 /** Build Sri Lankan suggestions from pantry — no TheMealDB. */
 export function buildLocalPantrySuggestions(ctx: AgentContext, prompt: string): Recipe[] {
   const servings = extractFamilySize(prompt) ?? 4;
   const lower = normalizeOrderTypos(prompt);
   // Prefer vector-ranked relevant pantry when available
   const shelf = ctx.relevantPantry?.length ? ctx.relevantPantry : ctx.inventory;
-  const has = (term: string) => shelf.some((i) => i.item.toLowerCase().includes(term));
+  const has = (term: string) =>
+    shelf.some((i) => i.item.toLowerCase().includes(term)) ||
+    ctx.inventory.some((i) => i.item.toLowerCase().includes(term));
   const out: Recipe[] = [];
 
   // Decided local dishes first — never lose to random pantry templates
@@ -273,13 +315,21 @@ export function buildLocalPantrySuggestions(ctx: AgentContext, prompt: string): 
   }
   if (/kottu|kothu/i.test(lower)) out.push(buildKottuFromPantry(ctx, servings));
   if (/fried\s*rice/i.test(lower)) out.push(buildFriedRiceFromPantry(ctx));
-  if (has('eggplant') || has('brinjal') || has('wambatu')) out.push(buildBrinjalCurryFromPantry(ctx, servings));
-  if (has('egg') && !/hopper/i.test(lower)) out.push(buildEggCurryFromPantry(ctx, servings));
-  if ((has('dhal') || has('dal')) && !/hopper/i.test(lower)) out.push(fallbackRecipe(ctx));
+
+  // Stock-driven suggestions for open "cook from pantry" (order matters: use perishables first)
+  if (!out.length || /pantry|what (should|can)|tonight|dinner|lunch/i.test(lower)) {
+    if (has('fish')) out.push(buildFishCurryFromPantry(ctx, servings));
+    if (has('egg')) out.push(buildEggCurryFromPantry(ctx, servings));
+    if (has('dhal') || has('dal') || has('lentil') || has('mysoor')) out.push(fallbackRecipe(ctx));
+    if (has('rice') && out.length) out.push(buildSteamedRiceFromPantry(ctx, servings));
+    if (has('eggplant') || has('brinjal') || has('wambatu')) out.push(buildBrinjalCurryFromPantry(ctx, servings));
+  }
 
   if (!out.length) {
-    if (has('rice')) out.push(fallbackRecipe(ctx));
-    if (has('egg')) out.push(buildEggCurryFromPantry(ctx, servings));
+    if (has('rice') && (has('dhal') || has('dal'))) out.push(fallbackRecipe(ctx));
+    else if (has('egg')) out.push(buildEggCurryFromPantry(ctx, servings));
+    else if (has('fish')) out.push(buildFishCurryFromPantry(ctx, servings));
+    else if (has('rice')) out.push(fallbackRecipe(ctx));
   }
 
   const seen = new Set<string>();
@@ -348,4 +398,4 @@ function fallbackRecipe(ctx: AgentContext): Recipe {
   };
 }
 
-export { buildFriedRiceFromPantry, buildHoppersFromPantry, buildStringHoppersFromPantry, fallbackRecipe, assignCook };
+export { buildFriedRiceFromPantry, buildHoppersFromPantry, buildStringHoppersFromPantry, buildFishCurryFromPantry, fallbackRecipe, assignCook };

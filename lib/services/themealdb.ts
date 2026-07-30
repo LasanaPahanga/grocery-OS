@@ -255,14 +255,24 @@ export async function fetchRecipesFromMealDb(opts: {
 }
 
 export function matchInventoryToRecipes(recipes: Recipe[], inventory: InventoryItem[]): Recipe[] {
+  // Strict lexical only — async vector rematch happens in applyPantryToRecipes
   return recipes.map((recipe) => {
     const ingredients = recipe.ingredients.map((ing) => {
-      const home = inventory.find(
-        (inv) =>
-          inv.item.toLowerCase().includes(ing.name.toLowerCase()) ||
-          ing.name.toLowerCase().includes(inv.item.toLowerCase().split(' ')[0])
-      );
-      return home ? { ...ing, source: 'inventory' as const } : ing;
+      const home = inventory.find((inv) => {
+        const item = inv.item.toLowerCase();
+        const name = ing.name.toLowerCase();
+        if (item === name) return true;
+        // Require token overlap on food stems — never match "oil" alone across oils without shared stem gate
+        const itemStem = item.split(/\s+/).filter((t) => t.length > 2);
+        const nameStem = name.split(/\s+/).filter((t) => t.length > 2);
+        return nameStem.some(
+          (n) =>
+            n.length >= 4 &&
+            itemStem.some((i) => i === n || i.includes(n) || n.includes(i)) &&
+            !/^(fresh|plain|large|red|white|farm)$/.test(n)
+        );
+      });
+      return home ? { ...ing, source: 'inventory' as const } : { ...ing, source: 'shopping' as const };
     });
     const inventoryUsed = ingredients.filter((i) => i.source === 'inventory').length;
     return {

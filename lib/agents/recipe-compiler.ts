@@ -5,7 +5,7 @@ import {
   matchInventoryToRecipes,
   searchMealsByName,
 } from '@/lib/services/themealdb';
-import { applyPantryToRecipes } from '@/lib/services/pantry-match';
+import { applyPantryToRecipes, pantryCoverage } from '@/lib/services/pantry-match';
 import { fetchRecipesFromGoogle } from '@/lib/services/recipe-web-search';
 import { geminiJson } from '@/lib/services/gemini';
 import {
@@ -156,18 +156,23 @@ export async function runRecipeCompiler(ctx: AgentContext): Promise<{ log: Agent
 
     const aiPick = await geminiJson<{ selectedIds: string[]; notes?: string }>(
       `User wants: "${userPrompt}"
+Meal mode: ${ctx.mealMode || 'unspecified'}${pantryFirst ? ' (MUST cook mainly from pantry)' : ''}
 Meal roles: ${componentPlan || 'none'}
 COOK only these dishes (do not bake/make buy-ready items): ${namedDishes.join(', ') || 'best match'}
 Buy ready (shopping list only, NOT recipes): ${buyReady.map((b) => b.name).join(', ') || 'none'}
 Previously liked dishes (prefer if they fit): ${JSON.stringify(ctx.likedDishes ?? [])}
 Budget: LKR ${ctx.budgetLkr}
+ACTUAL pantry stock (only these count as "at home"): ${JSON.stringify(ctx.inventory.map((i) => i.item))}
 Prioritized pantry: ${JSON.stringify(pantryForPrompt.map((i) => i.item))}
 TheMealDB candidates (MUST pick from these ids only):
 ${JSON.stringify(catalog)}
-Serve ~${servings} people.${pantryFirst ? ' Prefer meals that use pantry items.' : ''}${
-        ctx.cookEffort === 'quick' ? ' Prefer quicker meals.' : ''
-      }`,
-      `Return JSON { selectedIds: string[] } with up to ${maxRecipes} TheMealDB meal ids for the COOK dishes only. Never select a bread-baking recipe when bread is listed as buy-ready. Prefer South Asian / home-style cooking for a Sri Lankan family.`
+Serve ~${servings} people.
+${
+  pantryFirst
+    ? 'CRITICAL: Do NOT pick chicken/beef recipes unless chicken/beef is in the pantry list. Prefer fish/dhal/egg/rice meals that match stock. Gaps become a shopping list — never pretend missing items are at home.'
+    : ''
+}${ctx.cookEffort === 'quick' ? ' Prefer quicker meals.' : ''}`,
+      `Return JSON { selectedIds: string[] } with up to ${maxRecipes} TheMealDB meal ids. Prefer South Asian / Sri Lankan home cooking. Reject candidates whose main protein is missing from pantry when meal mode is pantry-first.`
     );
 
     if (aiPick?.selectedIds?.length) {
@@ -262,8 +267,28 @@ Serve ~${servings} people.${pantryFirst ? ' Prefer meals that use pantry items.'
 
   recipes = (await applyPantryToRecipes(matchInventoryToRecipes(recipes, ctx.inventory), ctx.inventory))
     .map(normalizeRecipe)
-    .filter((r) => !isExoticRecipe(r) || r.id === 'buy_ready_sides' || r.id.startsWith('google_'))
+    .filter((r) => !isExoticRecipe(r) || r.id === 'buy_ready_sides' || r.id.startsWith('google_') || r.id.startsWith('local_'))
     .slice(0, Math.max(maxRecipes, buyReady.length ? 1 : maxRecipes));
+
+  // Pantry-first: drop MealDB picks that barely use real stock; rebuild from local templates
+  if (pantryFirst && recipes.length) {
+    const viable = recipes.filter((r) => {
+      const c = pantryCoverage(r);
+      const needsChicken = /chicken|katsu/i.test(r.name + r.ingredients.map((i) => i.name).join(' '));
+      const hasChicken = ctx.inventory.some((i) => /chicken/i.test(i.item));
+      if (needsChicken && !hasChicken) return false;
+      return c.home >= 2 && c.ratio >= 0.3;
+    });
+    if (!viable.length) {
+      const local = buildLocalPantrySuggestions(ctx, userPrompt);
+      recipes = local.length
+        ? (await applyPantryToRecipes(local, ctx.inventory)).map(normalizeRecipe).slice(0, maxRecipes)
+        : recipes;
+      log.message = `Pantry-first rebuild — ${recipes.map((r) => r.name).join(', ') || 'none'} (MealDB picks needed missing ingredients).`;
+    } else {
+      recipes = viable.slice(0, maxRecipes);
+    }
+  }
 
   const cook = assignCook(ctx);
   recipes = recipes.map((r) => ({
