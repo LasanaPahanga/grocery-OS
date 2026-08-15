@@ -15,7 +15,7 @@ export async function POST(request: Request) {
 
   if (!isVertexConfigured()) {
     return NextResponse.json(
-      { error: 'Bill scanning requires Vertex AI (GOOGLE_CLOUD_PROJECT + GOOGLE_APPLICATION_CREDENTIALS)' },
+      { error: 'Bill scanning requires Vertex AI (GOOGLE_CLOUD_PROJECT + GOOGLE_SERVICE_ACCOUNT_JSON)' },
       { status: 503 }
     );
   }

@@ -1,7 +1,10 @@
-import { readFileSync, existsSync } from 'fs';
-import { resolve as resolvePath } from 'path';
 import { GoogleAuth } from 'google-auth-library';
 import { planError, planLog, planWarn } from '@/lib/plan-logger';
+import {
+  getGoogleAuth,
+  isGoogleCredentialsConfigured,
+  projectFromGoogleCredentials,
+} from '@/lib/services/google-credentials';
 
 export type ResponseSchema = {
   type: string;
@@ -22,30 +25,13 @@ export const SchemaType = {
   OBJECT: 'OBJECT',
 } as const;
 
-function credentialsPath(): string | null {
-  const raw = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
-  if (!raw) return null;
-  return raw.startsWith('.') ? resolvePath(process.cwd(), raw) : raw;
-}
-
-function projectFromCredentialsFile(): string | null {
-  const path = credentialsPath();
-  if (!path || !existsSync(path)) return null;
-  try {
-    const json = JSON.parse(readFileSync(path, 'utf8')) as { project_id?: string };
-    return json.project_id?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 export function getVertexConfig(): { project: string; location: string } | null {
   const project =
     process.env.GOOGLE_CLOUD_PROJECT?.trim() ||
     process.env.GCP_PROJECT?.trim() ||
     process.env.GCLOUD_PROJECT?.trim() ||
     process.env.VERTEX_AI_PROJECT?.trim() ||
-    projectFromCredentialsFile();
+    projectFromGoogleCredentials();
   const location =
     process.env.GOOGLE_CLOUD_LOCATION?.trim() ||
     process.env.VERTEX_AI_LOCATION?.trim() ||
@@ -56,7 +42,7 @@ export function getVertexConfig(): { project: string; location: string } | null 
 }
 
 export function isVertexConfigured(): boolean {
-  return Boolean(getVertexConfig() && (credentialsPath() || process.env.GOOGLE_APPLICATION_CREDENTIALS));
+  return Boolean(getVertexConfig() && isGoogleCredentialsConfigured());
 }
 
 /** @deprecated kept for import compatibility */
@@ -79,7 +65,7 @@ export function vertexModelName(): string {
 
 async function getAccessToken(): Promise<string | null> {
   if (!authClient) {
-    authClient = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+    authClient = getGoogleAuth();
   }
   const client = await authClient.getClient();
   const token = await client.getAccessToken();
@@ -109,7 +95,7 @@ async function vertexGenerateContent(input: {
   image?: { base64: string; mimeType: string };
 }): Promise<string> {
   const config = getVertexConfig();
-  if (!config) throw new Error('Vertex AI not configured (GOOGLE_CLOUD_PROJECT + GOOGLE_APPLICATION_CREDENTIALS)');
+  if (!config) throw new Error('Vertex AI not configured (GOOGLE_CLOUD_PROJECT + GOOGLE_SERVICE_ACCOUNT_JSON)');
 
   const token = await getAccessToken();
   if (!token) throw new Error('Failed to obtain Google Cloud access token');

@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:orchestration": "node scripts/test-orchestration.mjs"
+    "test:orchestration": "node scripts/test-orchestration.mjs",
+    "print:google-env": "node scripts/print-google-env.mjs"
   },
   "dependencies": {
     "@google-cloud/vertexai": "^1.12.0",
